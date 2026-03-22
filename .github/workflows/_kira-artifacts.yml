@@ -287,6 +287,7 @@ jobs:
           }
 
           $vars = & cmd.exe /s /c "`"$vsPath\Common7\Tools\VsDevCmd.bat`" -arch=amd64 -host_arch=amd64 && set"
+          $vars | Set-Content -Path (Join-Path $PWD 'vsdevcmd-env-x64.txt') -Encoding ascii
           foreach ($line in $vars) {
             if ($line -match '^([^=]+)=(.*)$') {
               Add-Content -Path $env:GITHUB_ENV -Value "$($matches[1])=$($matches[2])"
@@ -320,6 +321,18 @@ jobs:
           export SOURCE_DATE_EPOCH
           export CL=/Brepro
           export LINK=/BREPRO
+
+          while IFS='=' read -r name value; do
+            value=${value%$'\r'}
+            case "$name" in
+              PATH)
+                export PATH="$(cygpath -up "$value"):$PATH"
+                ;;
+              INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|WindowsSdkDir|WindowsSdkBinPath|WindowsSdkVerBinPath|WindowsSDKVersion|UniversalCRTSdkDir|UCRTVersion)
+                export "$name=$value"
+                ;;
+            esac
+          done < "$PWD/vsdevcmd-env-x64.txt"
 
           vc_bin="$(cygpath -u "$VCToolsInstallDir")bin/$MSVC_BIN_SUBDIR"
           sdk_ver_bin="$(cygpath -u "$WindowsSdkVerBinPath")$SDK_BIN_SUBDIR"
@@ -363,7 +376,7 @@ jobs:
             export CFLAGS="-DFFI_BUILDING_DLL"
           fi
 
-          ../configure "${configure_args[@]}"
+          ../configure "${configure_args[@]}" || { cat config.log; exit 1; }
           make -j"$(nproc)"
           make install
 
@@ -488,6 +501,7 @@ jobs:
           }
 
           $vars = & cmd.exe /s /c "`"$vsPath\Common7\Tools\VsDevCmd.bat`" -arch=arm64 -host_arch=arm64 && set"
+          $vars | Set-Content -Path (Join-Path $PWD 'vsdevcmd-env-arm64.txt') -Encoding ascii
           foreach ($line in $vars) {
             if ($line -match '^([^=]+)=(.*)$') {
               Add-Content -Path $env:GITHUB_ENV -Value "$($matches[1])=$($matches[2])"
@@ -516,6 +530,18 @@ jobs:
           export SOURCE_DATE_EPOCH
           export CL=/Brepro
           export LINK=/BREPRO
+
+          while IFS='=' read -r name value; do
+            value=${value%$'\r'}
+            case "$name" in
+              PATH)
+                export PATH="$(cygpath -up "$value"):$PATH"
+                ;;
+              INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|WindowsSdkDir|WindowsSdkBinPath|WindowsSdkVerBinPath|WindowsSDKVersion|UniversalCRTSdkDir|UCRTVersion)
+                export "$name=$value"
+                ;;
+            esac
+          done < "$PWD/vsdevcmd-env-arm64.txt"
 
           vc_bin="$(cygpath -u "$VCToolsInstallDir")bin/HostARM64/ARM64"
           sdk_ver_bin="$(cygpath -u "$WindowsSdkVerBinPath")arm64"
@@ -553,7 +579,7 @@ jobs:
             --disable-static \
             --build=aarch64-w64-mingw32 \
             --host=aarch64-w64-mingw32 \
-            --prefix="$PWD/install"
+            --prefix="$PWD/install" || { cat config.log; exit 1; }
 
           make -j"$(nproc)"
           make install
