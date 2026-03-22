@@ -1,0 +1,118 @@
+name: Publish Existing CI Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create, for example v3.5.2
+        required: true
+        type: string
+      target_sha:
+        description: Commit SHA to tag and match artifacts from. Defaults to the workflow ref SHA.
+        required: false
+        type: string
+      ci_run_id:
+        description: Optional CI run ID to publish instead of auto-selecting the latest CI run for the tagged commit.
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create tag and publish release from CI artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_TARGET_SHA: ${{ inputs.target_sha }}
+          INPUT_CI_RUN_ID: ${{ inputs.ci_run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          tag="$INPUT_TAG"
+          if [[ ! "$tag" =~ ^v[0-9] ]]; then
+            echo "Tag must start with v, for example v3.5.2." >&2
+            exit 1
+          fi
+
+          target_sha="$INPUT_TARGET_SHA"
+          if [[ -z "$target_sha" ]]; then
+            target_sha="$(git rev-parse "$GITHUB_SHA")"
+          fi
+
+          git fetch --tags origin
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists on origin." >&2
+            exit 1
+          fi
+
+          run_id="$INPUT_CI_RUN_ID"
+          if [[ -z "$run_id" ]]; then
+            run_json="$(gh run list \
+              --repo "$REPO" \
+              --workflow "CI" \
+              --commit "$target_sha" \
+              --limit 20 \
+              --json databaseId,status,conclusion,headSha,createdAt,url \
+              --jq 'sort_by(.createdAt) | reverse | .[0]')"
+
+            if [[ -z "$run_json" || "$run_json" == "null" ]]; then
+              echo "No CI run was found for commit $target_sha. Run CI first or provide ci_run_id." >&2
+              exit 1
+            fi
+          else
+            run_json="$(gh run view "$run_id" --repo "$REPO" --json databaseId,status,conclusion,headSha,url)"
+            if [[ -z "$run_json" || "$run_json" == "null" ]]; then
+              echo "CI run $run_id was not found." >&2
+              exit 1
+            fi
+          fi
+
+          run_id="$(printf '%s' "$run_json" | jq -r '.databaseId')"
+          run_status="$(printf '%s' "$run_json" | jq -r '.status')"
+          run_conclusion="$(printf '%s' "$run_json" | jq -r '.conclusion')"
+          run_head_sha="$(printf '%s' "$run_json" | jq -r '.headSha')"
+
+          if [[ "$run_head_sha" != "$target_sha" ]]; then
+            echo "CI run $run_id was built from $run_head_sha, not $target_sha." >&2
+            exit 1
+          fi
+
+          if [[ "$run_status" != "completed" ]]; then
+            gh run watch "$run_id" --repo "$REPO" --exit-status
+            run_conclusion="$(gh run view "$run_id" --repo "$REPO" --json conclusion --jq '.conclusion')"
+          fi
+
+          if [[ "$run_conclusion" != "success" ]]; then
+            echo "CI run $run_id did not succeed." >&2
+            exit 1
+          fi
+
+          rm -rf release-assets
+          mkdir -p release-assets
+          gh run download "$run_id" --repo "$REPO" --dir release-assets
+
+          mapfile -t archives < <(find release-assets -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+          if [[ ${#archives[@]} -eq 0 ]]; then
+            echo "No packaged archives were found in CI run $run_id." >&2
+            exit 1
+          fi
+
+          git tag "$tag" "$target_sha"
+          git push origin "refs/tags/$tag"
+
+          if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$tag" --repo "$REPO" "${archives[@]}" --clobber
+          else
+            gh release create "$tag" --repo "$REPO" --verify-tag --title "$tag" --generate-notes "${archives[@]}"
+          fi
