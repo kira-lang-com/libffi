@@ -4,6 +4,7 @@ AC_PREREQ([2.68])
 
 AC_INIT([libffi],[3.5.2],[http://github.com/libffi/libffi/issues])
 AC_CONFIG_HEADERS([fficonfig.h])
+m4_include([m4/libffi_lt_compat.m4])
 
 FFI_VERSION_STRING="3.5.2"
 FFI_VERSION_NUMBER=30502
