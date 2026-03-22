@@ -286,6 +286,7 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MSYS
+          path-type: inherit
           update: true
           install: >-
             autoconf
@@ -475,6 +476,7 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MSYS
+          path-type: inherit
           update: true
           install: >-
             autoconf
