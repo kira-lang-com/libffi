@@ -442,7 +442,7 @@ jobs:
           # Upstream documents the ARM64 static Visual Studio solution in
           # README.md, so this keeps the static ARM64 build on the supported
           # path rather than inventing a separate toolchain.
-          msbuild msvc_build\aarch64\Ffi_staticLib.sln /m /p:Configuration=Release /p:Platform=ARM64 /p:WindowsTargetPlatformVersion=$sdkVersion
+          msbuild msvc_build\aarch64\Ffi_staticLib.sln /m /p:Configuration=Release /p:Platform=ARM64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=$sdkVersion
 
           $lib = Get-ChildItem -Path msvc_build\aarch64 -Recurse -Filter *.lib |
             Select-Object -First 1
