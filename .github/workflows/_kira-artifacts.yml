@@ -378,14 +378,24 @@ jobs:
 
           ../configure "${configure_args[@]}" || { cat config.log; exit 1; }
           make -j"$(nproc)"
-          make install
 
           cd ..
 
           package_name="libffi-${VERSION}-${PACKAGE_SUFFIX}"
           mkdir -p dist
-          IFS=' ' read -r -a patterns <<< "$LIB_PATTERNS"
-          ./scripts/ci/package-install-tree.sh dist "$PWD/build/install" "$package_name" "${patterns[@]}"
+          if [[ "$LINKAGE" == "static" ]]; then
+            (cd build && make install)
+            IFS=' ' read -r -a patterns <<< "$LIB_PATTERNS"
+            ./scripts/ci/package-install-tree.sh dist "$PWD/build/install" "$package_name" "${patterns[@]}"
+          else
+            package_dir="dist/$package_name"
+            mkdir -p "$package_dir/include" "$package_dir/lib"
+            cp build/include/ffi.h build/include/ffitarget.h "$package_dir/include/"
+            cp -P build/.libs/*.dll "$package_dir/lib/"
+            if compgen -G "build/.libs/*.lib" > /dev/null; then
+              cp -P build/.libs/*.lib "$package_dir/lib/"
+            fi
+          fi
           powershell.exe -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$PWD/dist/$package_name")' -DestinationPath '$(cygpath -w "$PWD/${package_name}.zip")' -Force"
 
           echo "artifact_name=$package_name" >> "$GITHUB_OUTPUT"
@@ -625,13 +635,17 @@ jobs:
             --prefix="$PWD/install" || { cat config.log; exit 1; }
 
           make -j"$(nproc)"
-          make install
 
           cd ..
 
           package_name="libffi-${VERSION}-windows-arm64-shared"
-          mkdir -p dist
-          ./scripts/ci/package-install-tree.sh dist "$PWD/build/install" "$package_name" "*.dll" "*.lib"
+          package_dir="dist/$package_name"
+          mkdir -p "$package_dir/include" "$package_dir/lib"
+          cp build/include/ffi.h build/include/ffitarget.h "$package_dir/include/"
+          cp -P build/.libs/*.dll "$package_dir/lib/"
+          if compgen -G "build/.libs/*.lib" > /dev/null; then
+            cp -P build/.libs/*.lib "$package_dir/lib/"
+          fi
           powershell.exe -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$PWD/dist/$package_name")' -DestinationPath '$(cygpath -w "$PWD/${package_name}.zip")' -Force"
 
           echo "artifact_name=$package_name" >> "$GITHUB_OUTPUT"
