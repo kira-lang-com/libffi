@@ -367,6 +367,8 @@ jobs:
 
           if [[ "$LINKAGE" == "static" ]]; then
             configure_args+=(--disable-shared --enable-static)
+            export CPPFLAGS="-DFFI_STATIC_BUILD"
+            export CFLAGS="-DFFI_STATIC_BUILD"
           else
             configure_args+=(--enable-shared --disable-static)
             export LDFLAGS="-no-undefined"
