@@ -319,8 +319,6 @@ jobs:
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH
-          export CL=/Brepro
-          export LINK=/BREPRO
 
           while IFS='=' read -r name value; do
             value=${value%$'\r'}
@@ -528,8 +526,6 @@ jobs:
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH
-          export CL=/Brepro
-          export LINK=/BREPRO
 
           while IFS='=' read -r name value; do
             value=${value%$'\r'}
