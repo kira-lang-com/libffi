@@ -263,9 +263,13 @@ jobs:
           - linkage: static
             package_suffix: windows-x64-static
             lib_patterns: '*.lib'
+            msvc_bin_subdir: Hostx64/x64
+            sdk_bin_subdir: x64
           - linkage: shared
             package_suffix: windows-x64-shared
             lib_patterns: '*.dll *.lib'
+            msvc_bin_subdir: Hostx64/x64
+            sdk_bin_subdir: x64
     steps:
       - name: Preserve LF line endings
         shell: pwsh
@@ -309,11 +313,22 @@ jobs:
           LINKAGE: ${{ matrix.linkage }}
           LIB_PATTERNS: ${{ matrix.lib_patterns }}
           PACKAGE_SUFFIX: ${{ matrix.package_suffix }}
+          MSVC_BIN_SUBDIR: ${{ matrix.msvc_bin_subdir }}
+          SDK_BIN_SUBDIR: ${{ matrix.sdk_bin_subdir }}
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH
           export CL=/Brepro
           export LINK=/BREPRO
+
+          vc_bin="$(cygpath -u "$VCToolsInstallDir")bin/$MSVC_BIN_SUBDIR"
+          sdk_ver_bin="$(cygpath -u "$WindowsSdkVerBinPath")$SDK_BIN_SUBDIR"
+          sdk_bin="$(cygpath -u "$WindowsSdkBinPath")$SDK_BIN_SUBDIR"
+          export PATH="$vc_bin:$sdk_ver_bin:$sdk_bin:$PATH"
+
+          command -v cl
+          command -v link
+          command -v lib
 
           autoreconf -fi
 
@@ -501,6 +516,15 @@ jobs:
           export SOURCE_DATE_EPOCH
           export CL=/Brepro
           export LINK=/BREPRO
+
+          vc_bin="$(cygpath -u "$VCToolsInstallDir")bin/HostARM64/ARM64"
+          sdk_ver_bin="$(cygpath -u "$WindowsSdkVerBinPath")arm64"
+          sdk_bin="$(cygpath -u "$WindowsSdkBinPath")arm64"
+          export PATH="$vc_bin:$sdk_ver_bin:$sdk_bin:$PATH"
+
+          command -v cl
+          command -v link
+          command -v lib
 
           autoreconf -fi
 
