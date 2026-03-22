@@ -425,48 +425,92 @@ jobs:
           }
 
           $vars = & cmd.exe /s /c "`"$vsPath\Common7\Tools\VsDevCmd.bat`" -arch=arm64 -host_arch=arm64 && set"
+          $vars | Set-Content -Path (Join-Path $PWD 'vsdevcmd-env-arm64.txt') -Encoding ascii
           foreach ($line in $vars) {
             if ($line -match '^([^=]+)=(.*)$') {
               Add-Content -Path $env:GITHUB_ENV -Value "$($matches[1])=$($matches[2])"
             }
           }
 
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          update: true
+          install: >-
+            autoconf
+            automake
+            libtool
+            make
+            pkgconf
+
       - id: package
-        shell: pwsh
+        shell: msys2 {0}
         env:
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $sdkVersion = $env:WindowsSDKVersion.TrimEnd('\')
+          set -euo pipefail
 
-          # Upstream documents the ARM64 static Visual Studio solution in
-          # README.md, so this keeps the static ARM64 build on the supported
-          # path rather than inventing a separate toolchain.
-          msbuild msvc_build\aarch64\Ffi_staticLib.sln /m /p:Configuration=Release /p:Platform=ARM64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=$sdkVersion
+          while IFS='=' read -r name value; do
+            value=${value%$'\r'}
+            case "$name" in
+              PATH)
+                export PATH="$(cygpath -up "$value"):$PATH"
+                ;;
+              INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|WindowsSdkDir|WindowsSdkBinPath|WindowsSdkVerBinPath|WindowsSDKVersion|UniversalCRTSdkDir|UCRTVersion)
+                export "$name=$value"
+                ;;
+            esac
+          done < "$PWD/vsdevcmd-env-arm64.txt"
 
-          $lib = Get-ChildItem -Path msvc_build\aarch64 -Recurse -Filter *.lib |
-            Select-Object -First 1
-          if (-not $lib) {
-            throw "Could not find the ARM64 static library output."
-          }
+          vc_bin="$(cygpath -u "$VCToolsInstallDir")bin/HostARM64/ARM64"
+          sdk_ver_bin="$(cygpath -u "$WindowsSdkVerBinPath")arm64"
+          sdk_bin="$(cygpath -u "$WindowsSdkBinPath")arm64"
+          export PATH="$vc_bin:$sdk_ver_bin:$sdk_bin:$PATH"
 
-          $packageName = "libffi-$env:VERSION-windows-arm64-static"
-          $packageRoot = Join-Path $PWD "dist\$packageName"
-          $includeDir = Join-Path $packageRoot "include"
-          $libDir = Join-Path $packageRoot "lib"
-          New-Item -ItemType Directory -Force -Path $includeDir | Out-Null
-          New-Item -ItemType Directory -Force -Path $libDir | Out-Null
+          command -v cl
+          command -v link
+          command -v lib
 
-          Copy-Item msvc_build\aarch64\aarch64_include\ffi.h $includeDir
-          Copy-Item msvc_build\aarch64\aarch64_include\fficonfig.h $includeDir
-          Copy-Item src\aarch64\ffitarget.h $includeDir
-          Copy-Item $lib.FullName $libDir
+          autoreconf -fi
 
-          $archive = "$packageName.zip"
-          Compress-Archive -Path $packageRoot -DestinationPath $archive -Force
+          mkdir -p build
+          cd build
 
-          Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_name=$packageName"
-          Add-Content -Path $env:GITHUB_OUTPUT -Value "archive=$archive"
+          export CC="$PWD/../msvcc.sh -marm64"
+          export CXX="$PWD/../msvcc.sh -marm64"
+          export LD=link
+          export CPP="cl -nologo -EP"
+          export CXXCPP="cl -nologo -EP"
+          export AR="$PWD/../ar-lib lib"
+          export NM="dumpbin -symbols"
+          export STRIP=':'
+          export CPPFLAGS="-DFFI_STATIC_BUILD"
+          export CFLAGS="-DFFI_STATIC_BUILD"
+
+          # The checked-in ARM64 VS solution currently carries stale generated
+          # headers, so the hosted build uses the upstream msvcc.sh flow for
+          # static ARM64 artifacts as well.
+          ../configure \
+            --disable-docs \
+            --disable-shared \
+            --enable-static \
+            --build=aarch64-w64-mingw32 \
+            --host=aarch64-w64-mingw32 \
+            --prefix="$PWD/install" || { cat config.log; exit 1; }
+
+          make -j"$(nproc)"
+          make install
+
+          cd ..
+
+          package_name="libffi-${VERSION}-windows-arm64-static"
+          mkdir -p dist
+          ./scripts/ci/package-install-tree.sh dist "$PWD/build/install" "$package_name" "*.lib"
+          powershell.exe -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$PWD/dist/$package_name")' -DestinationPath '$(cygpath -w "$PWD/${package_name}.zip")' -Force"
+
+          echo "artifact_name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "archive=${package_name}.zip" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
