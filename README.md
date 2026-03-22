@@ -128,6 +128,38 @@ tested:
 Please send additional platform test results to
 libffi-discuss@sourceware.org.
 
+Kira Artifact Matrix
+====================
+
+This fork keeps libffi close to upstream and only adds automation for the
+prebuilt targets Kira consumes directly. The default GitHub Actions CI and
+release workflows officially build only:
+
+| Target | Static | Shared |
+| ------ | ------ | ------ |
+| macOS arm64 | Yes | Yes |
+| iOS arm64 device | Yes | No |
+| iOS simulator arm64 | Yes | No |
+| Linux x86_64 | Yes | Yes |
+| Linux arm64 | Yes | Yes |
+| Windows x64 (MSVC) | Yes | Yes |
+| Windows arm64 (MSVC) | Yes | Yes, best effort via upstream msvcc.sh flow |
+
+Apple artifacts are packaged separately by SDK instead of as fat libraries:
+
+| Kira target triple | Artifact suffix |
+| ------------------ | --------------- |
+| `aarch64-apple-darwin` | `macos-arm64-{static,shared}` |
+| `aarch64-apple-ios` | `ios-arm64-static` |
+| `aarch64-apple-ios-simulator` | `ios-simulator-arm64-static` |
+| `x86_64-unknown-linux-gnu` | `linux-x86_64-{static,shared}` |
+| `aarch64-unknown-linux-gnu` | `linux-arm64-{static,shared}` |
+| `x86_64-pc-windows-msvc` | `windows-x64-{static,shared}` |
+| `aarch64-pc-windows-msvc` | `windows-arm64-{static,shared}` |
+
+Each packaged artifact contains `include/` and `lib/` directories and uses a
+deterministic name such as `libffi-<version>-ios-simulator-arm64-static`.
+
 Installing libffi
 =================
 

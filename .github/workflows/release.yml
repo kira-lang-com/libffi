@@ -1,18 +1,16 @@
-name: CI
+name: Release
 
 on:
   push:
-    branches:
-      - "**"
-  pull_request:
-  workflow_dispatch:
+    tags:
+      - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   kira-artifacts:
     uses: ./.github/workflows/_kira-artifacts.yml
     with:
-      publish_release: false
+      publish_release: true
     secrets: inherit

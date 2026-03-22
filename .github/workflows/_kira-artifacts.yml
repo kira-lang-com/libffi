@@ -1,0 +1,550 @@
+name: Kira Artifacts
+
+on:
+  workflow_call:
+    inputs:
+      publish_release:
+        required: true
+        type: boolean
+
+jobs:
+  meta:
+    name: Resolve artifact metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      source_date_epoch: ${{ steps.version.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "version=$(./scripts/ci/libffi-version.sh)" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure release exists
+        if: ${{ inputs.publish_release }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+
+  apple:
+    name: Apple ${{ matrix.package_suffix }}
+    needs: meta
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package_suffix: macos-arm64-static
+            configure_host: arm64-apple-darwin
+            clang_target: arm64-apple-macos11
+            sdk: macosx
+            minimum_os_flag: -mmacosx-version-min=11.0
+            linkage: static
+            lib_patterns: libffi.a
+          - package_suffix: macos-arm64-shared
+            configure_host: arm64-apple-darwin
+            clang_target: arm64-apple-macos11
+            sdk: macosx
+            minimum_os_flag: -mmacosx-version-min=11.0
+            linkage: shared
+            lib_patterns: libffi*.dylib
+          - package_suffix: ios-arm64-static
+            configure_host: arm64-apple-ios
+            clang_target: arm64-apple-ios
+            sdk: iphoneos
+            minimum_os_flag: -miphoneos-version-min=13.0
+            linkage: static
+            lib_patterns: libffi.a
+          - package_suffix: ios-simulator-arm64-static
+            # config.sub accepts "iossimulator" here; clang still wants
+            # the more common "apple-ios-simulator" target spelling.
+            configure_host: arm64-apple-iossimulator
+            clang_target: arm64-apple-ios-simulator
+            sdk: iphonesimulator
+            minimum_os_flag: -mios-simulator-version-min=13.0
+            linkage: static
+            lib_patterns: libffi.a
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: package
+        shell: bash
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.meta.outputs.source_date_epoch }}
+          CONFIGURE_HOST: ${{ matrix.configure_host }}
+          CLANG_TARGET: ${{ matrix.clang_target }}
+          SDK: ${{ matrix.sdk }}
+          MINIMUM_OS_FLAG: ${{ matrix.minimum_os_flag }}
+          LINKAGE: ${{ matrix.linkage }}
+          LIB_PATTERNS: ${{ matrix.lib_patterns }}
+          PACKAGE_SUFFIX: ${{ matrix.package_suffix }}
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH
+          export ZERO_AR_DATE=1
+          export COPYFILE_DISABLE=1
+
+          autoreconf -fi
+
+          mkdir -p build
+          cd build
+
+          sdk_path=$(xcrun --sdk "$SDK" --show-sdk-path)
+          export CC="$(xcrun -f clang) -target $CLANG_TARGET -isysroot $sdk_path"
+          export LD="$(xcrun -f ld)"
+          export CFLAGS="$MINIMUM_OS_FLAG"
+
+          configure_args=(
+            "--disable-docs"
+            "--host=$CONFIGURE_HOST"
+            "--prefix=$PWD/install"
+          )
+
+          if [[ "$SDK" != "macosx" ]]; then
+            configure_args+=("--build=$(../config.guess)")
+          fi
+
+          if [[ "$LINKAGE" == "static" ]]; then
+            configure_args+=(--disable-shared --enable-static)
+          else
+            configure_args+=(--enable-shared --disable-static)
+          fi
+
+          ../configure "${configure_args[@]}"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+          cd ..
+
+          package_name="libffi-${VERSION}-${PACKAGE_SUFFIX}"
+          mkdir -p dist
+          IFS=' ' read -r -a patterns <<< "$LIB_PATTERNS"
+          ./scripts/ci/package-install-tree.sh dist "$PWD/build/install" "$package_name" "${patterns[@]}"
+          tar -C dist -czf "${package_name}.tar.gz" "$package_name"
+
+          echo "artifact_name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "archive=${package_name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+      - name: Upload release asset
+        if: ${{ inputs.publish_release }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ steps.package.outputs.archive }}" --clobber
+
+  linux:
+    name: Linux ${{ matrix.package_suffix }}
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            configure_host: x86_64-pc-linux-gnu
+            package_suffix: linux-x86_64-static
+            linkage: static
+            lib_patterns: libffi.a
+          - runner: ubuntu-24.04
+            configure_host: x86_64-pc-linux-gnu
+            package_suffix: linux-x86_64-shared
+            linkage: shared
+            lib_patterns: libffi.so*
+          - runner: ubuntu-24.04-arm
+            configure_host: aarch64-unknown-linux-gnu
+            package_suffix: linux-arm64-static
+            linkage: static
+            lib_patterns: libffi.a
+          - runner: ubuntu-24.04-arm
+            configure_host: aarch64-unknown-linux-gnu
+            package_suffix: linux-arm64-shared
+            linkage: shared
+            lib_patterns: libffi.so*
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes autoconf automake gcc g++ libtool make pkgconf
+
+      - id: package
+        shell: bash
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.meta.outputs.source_date_epoch }}
+          CONFIGURE_HOST: ${{ matrix.configure_host }}
+          LINKAGE: ${{ matrix.linkage }}
+          LIB_PATTERNS: ${{ matrix.lib_patterns }}
+          PACKAGE_SUFFIX: ${{ matrix.package_suffix }}
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH
+          export ARFLAGS=crD
+
+          autoreconf -fi
+
+          mkdir -p build
+          cd build
+
+          configure_args=(
+            "--disable-docs"
+            "--build=$(../config.guess)"
+            "--host=$CONFIGURE_HOST"
+            "--prefix=$PWD/install"
+          )
+
+          if [[ "$LINKAGE" == "static" ]]; then
+            configure_args+=(--disable-shared --enable-static)
+          else
+            configure_args+=(--enable-shared --disable-static)
+          fi
+
+          ../configure "${configure_args[@]}"
+          make -j"$(nproc)"
+          make install
+
+          cd ..
+
+          package_name="libffi-${VERSION}-${PACKAGE_SUFFIX}"
+          mkdir -p dist
+          IFS=' ' read -r -a patterns <<< "$LIB_PATTERNS"
+          ./scripts/ci/package-install-tree.sh dist "$PWD/build/install" "$package_name" "${patterns[@]}"
+          tar -C dist -czf "${package_name}.tar.gz" "$package_name"
+
+          echo "artifact_name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "archive=${package_name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+      - name: Upload release asset
+        if: ${{ inputs.publish_release }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ steps.package.outputs.archive }}" --clobber
+
+  windows-x64:
+    name: Windows x64 ${{ matrix.linkage }}
+    needs: meta
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - linkage: static
+            package_suffix: windows-x64-static
+            lib_patterns: '*.lib'
+          - linkage: shared
+            package_suffix: windows-x64-shared
+            lib_patterns: '*.dll *.lib'
+    steps:
+      - name: Preserve LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC tools
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          if (-not $vsPath) {
+            throw "Visual Studio installation not found."
+          }
+
+          $vars = & cmd.exe /s /c "`"$vsPath\Common7\Tools\VsDevCmd.bat`" -arch=amd64 -host_arch=amd64 && set"
+          foreach ($line in $vars) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              Add-Content -Path $env:GITHUB_ENV -Value "$($matches[1])=$($matches[2])"
+            }
+          }
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          install: >-
+            autoconf
+            automake
+            libtool
+            make
+            pkgconf
+
+      - id: package
+        shell: msys2 {0}
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.meta.outputs.source_date_epoch }}
+          LINKAGE: ${{ matrix.linkage }}
+          LIB_PATTERNS: ${{ matrix.lib_patterns }}
+          PACKAGE_SUFFIX: ${{ matrix.package_suffix }}
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH
+          export CL=/Brepro
+          export LINK=/BREPRO
+
+          autoreconf -fi
+
+          mkdir -p build
+          cd build
+
+          export CC="$PWD/../msvcc.sh -m64"
+          export CXX="$PWD/../msvcc.sh -m64"
+          export LD=link
+          export CPP="cl -nologo -EP"
+          export CXXCPP="cl -nologo -EP"
+          export AR="$PWD/../ar-lib lib"
+          export NM="dumpbin -symbols"
+          export STRIP=':'
+          export LDFLAGS=
+          export CPPFLAGS=
+          export CFLAGS=
+
+          configure_args=(
+            "--disable-docs"
+            "--build=x86_64-w64-mingw32"
+            "--host=x86_64-w64-mingw32"
+            "--prefix=$PWD/install"
+          )
+
+          if [[ "$LINKAGE" == "static" ]]; then
+            configure_args+=(--disable-shared --enable-static)
+          else
+            configure_args+=(--enable-shared --disable-static)
+            export LDFLAGS="-no-undefined"
+            export CPPFLAGS="-DFFI_BUILDING_DLL"
+            export CFLAGS="-DFFI_BUILDING_DLL"
+          fi
+
+          ../configure "${configure_args[@]}"
+          make -j"$(nproc)"
+          make install
+
+          cd ..
+
+          package_name="libffi-${VERSION}-${PACKAGE_SUFFIX}"
+          mkdir -p dist
+          IFS=' ' read -r -a patterns <<< "$LIB_PATTERNS"
+          ./scripts/ci/package-install-tree.sh dist "$PWD/build/install" "$package_name" "${patterns[@]}"
+          powershell.exe -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$PWD/dist/$package_name")' -DestinationPath '$(cygpath -w "$PWD/${package_name}.zip")' -Force"
+
+          echo "artifact_name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "archive=${package_name}.zip" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+      - name: Upload release asset
+        if: ${{ inputs.publish_release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload $env:GITHUB_REF_NAME "${{ steps.package.outputs.archive }}" --clobber
+
+  windows-arm64-static:
+    name: Windows arm64 static
+    needs: meta
+    runs-on: windows-11-arm
+    steps:
+      - name: Preserve LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC tools
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          if (-not $vsPath) {
+            throw "Visual Studio installation not found."
+          }
+
+          $vars = & cmd.exe /s /c "`"$vsPath\Common7\Tools\VsDevCmd.bat`" -arch=arm64 -host_arch=arm64 && set"
+          foreach ($line in $vars) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              Add-Content -Path $env:GITHUB_ENV -Value "$($matches[1])=$($matches[2])"
+            }
+          }
+
+      - id: package
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Upstream documents the ARM64 static Visual Studio solution in
+          # README.md, so this keeps the static ARM64 build on the supported
+          # path rather than inventing a separate toolchain.
+          msbuild msvc_build\aarch64\Ffi_staticLib.sln /m /p:Configuration=Release /p:Platform=ARM64
+
+          $lib = Get-ChildItem -Path msvc_build\aarch64 -Recurse -Filter *.lib |
+            Select-Object -First 1
+          if (-not $lib) {
+            throw "Could not find the ARM64 static library output."
+          }
+
+          $packageName = "libffi-$env:VERSION-windows-arm64-static"
+          $packageRoot = Join-Path $PWD "dist\$packageName"
+          $includeDir = Join-Path $packageRoot "include"
+          $libDir = Join-Path $packageRoot "lib"
+          New-Item -ItemType Directory -Force -Path $includeDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $libDir | Out-Null
+
+          Copy-Item msvc_build\aarch64\aarch64_include\ffi.h $includeDir
+          Copy-Item msvc_build\aarch64\aarch64_include\fficonfig.h $includeDir
+          Copy-Item src\aarch64\ffitarget.h $includeDir
+          Copy-Item $lib.FullName $libDir
+
+          $archive = "$packageName.zip"
+          Compress-Archive -Path $packageRoot -DestinationPath $archive -Force
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_name=$packageName"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "archive=$archive"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+      - name: Upload release asset
+        if: ${{ inputs.publish_release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload $env:GITHUB_REF_NAME "${{ steps.package.outputs.archive }}" --clobber
+
+  windows-arm64-shared:
+    name: Windows arm64 shared
+    needs: meta
+    runs-on: windows-11-arm
+    steps:
+      - name: Preserve LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC tools
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          if (-not $vsPath) {
+            throw "Visual Studio installation not found."
+          }
+
+          $vars = & cmd.exe /s /c "`"$vsPath\Common7\Tools\VsDevCmd.bat`" -arch=arm64 -host_arch=arm64 && set"
+          foreach ($line in $vars) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              Add-Content -Path $env:GITHUB_ENV -Value "$($matches[1])=$($matches[2])"
+            }
+          }
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          install: >-
+            autoconf
+            automake
+            libtool
+            make
+            pkgconf
+
+      - id: package
+        shell: msys2 {0}
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.meta.outputs.source_date_epoch }}
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH
+          export CL=/Brepro
+          export LINK=/BREPRO
+
+          autoreconf -fi
+
+          mkdir -p build
+          cd build
+
+          export CC="$PWD/../msvcc.sh -marm64"
+          export CXX="$PWD/../msvcc.sh -marm64"
+          export LD=link
+          export CPP="cl -nologo -EP"
+          export CXXCPP="cl -nologo -EP"
+          export AR="$PWD/../ar-lib lib"
+          export NM="dumpbin -symbols"
+          export STRIP=':'
+          export LDFLAGS="-no-undefined"
+          export CPPFLAGS="-DFFI_BUILDING_DLL"
+          export CFLAGS="-DFFI_BUILDING_DLL"
+
+          # The ARM64 README only documents the static VS solution explicitly.
+          # This shared-library build uses the upstream msvcc.sh/autotools path
+          # as a best effort on the hosted ARM64 runner and should fail loudly
+          # if the toolchain support is not there.
+          ../configure \
+            --disable-docs \
+            --enable-shared \
+            --disable-static \
+            --build=aarch64-w64-mingw32 \
+            --host=aarch64-w64-mingw32 \
+            --prefix="$PWD/install"
+
+          make -j"$(nproc)"
+          make install
+
+          cd ..
+
+          package_name="libffi-${VERSION}-windows-arm64-shared"
+          mkdir -p dist
+          ./scripts/ci/package-install-tree.sh dist "$PWD/build/install" "$package_name" "*.dll" "*.lib"
+          powershell.exe -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$PWD/dist/$package_name")' -DestinationPath '$(cygpath -w "$PWD/${package_name}.zip")' -Force"
+
+          echo "artifact_name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "archive=${package_name}.zip" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+      - name: Upload release asset
+        if: ${{ inputs.publish_release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload $env:GITHUB_REF_NAME "${{ steps.package.outputs.archive }}" --clobber
