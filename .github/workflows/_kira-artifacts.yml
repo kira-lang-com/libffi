@@ -121,7 +121,17 @@ jobs:
           fi
 
           if [[ "$LINKAGE" == "static" ]]; then
-            configure_args+=(--disable-shared --enable-static)
+            # `--with-pic` is what makes libtool compile the static objects
+            # position-independent. Without it the only guarantee is the
+            # compiler's default, and a default of `-fPIE` is not the same
+            # thing: under PIE a global is not preemptible, so x86_64 gcc
+            # reaches `ffi_type_float` with a direct `R_X86_64_PC32` and the
+            # object cannot go into a shared library at all. aarch64 hides this
+            # by routing the same reference through the GOT regardless, which
+            # is why only the x86_64 archive failed. Kira links this archive
+            # into a `.so` for its live path, so PIC is a requirement of the
+            # artifact and not a preference of one consumer.
+            configure_args+=(--disable-shared --enable-static --with-pic)
           else
             configure_args+=(--enable-shared --disable-static)
           fi
@@ -219,7 +229,17 @@ jobs:
           )
 
           if [[ "$LINKAGE" == "static" ]]; then
-            configure_args+=(--disable-shared --enable-static)
+            # `--with-pic` is what makes libtool compile the static objects
+            # position-independent. Without it the only guarantee is the
+            # compiler's default, and a default of `-fPIE` is not the same
+            # thing: under PIE a global is not preemptible, so x86_64 gcc
+            # reaches `ffi_type_float` with a direct `R_X86_64_PC32` and the
+            # object cannot go into a shared library at all. aarch64 hides this
+            # by routing the same reference through the GOT regardless, which
+            # is why only the x86_64 archive failed. Kira links this archive
+            # into a `.so` for its live path, so PIC is a requirement of the
+            # artifact and not a preference of one consumer.
+            configure_args+=(--disable-shared --enable-static --with-pic)
           else
             configure_args+=(--enable-shared --disable-static)
           fi
